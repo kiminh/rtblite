@@ -4,22 +4,27 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"time"
+	"runtime"
+
+	"github.com/facebookgo/grace/gracehttp"
 )
 
 var (
-	ConfigFilePath     string
-	PrintExampleConfig bool
+	ConfigFilePath      string
+	PrintExampleConfig  bool
+	UpdateExampleConfig bool
 )
 
 func init() {
 	flag.StringVar(&ConfigFilePath, "c", "rtblite.conf", "指定一个配置文件")
 	flag.BoolVar(&PrintExampleConfig, "e", false, "打印一份样例配置，你可以将它存为文件后待用 :)")
+	flag.BoolVar(&UpdateExampleConfig, "u", false, "升级配置文件，你可以将它存为文件后待用 :)")
 }
 
 func main() {
-	flag.Parse()
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
+	flag.Parse()
 	configure := NewConfigure()
 	if PrintExampleConfig {
 		fmt.Println(configure.String())
@@ -31,22 +36,43 @@ func main() {
 			fmt.Println("using default configure")
 		}
 	}
-	fmt.Println("current active configure:", configure.String())
 
+	if UpdateExampleConfig {
+		fmt.Println(configure.String())
+		return
+	}
+
+	fmt.Println("current active configure:", configure.String())
 	rtblite, err := NewRtbLite(configure)
 	if err != nil {
 		fmt.Println("fail to create server instance:", err.Error())
 		return
 	}
-	if err := rtblite.CacheUpdateLoop(30 * time.Second); err != nil {
+	if err := rtblite.CacheUpdateLoop(); err != nil {
 		fmt.Println("fail to fetch initial inventory:", err.Error())
 		return
 	}
+	rtblite.RunProfiler()
+
 	listenOn := configure.HttpAddress
-	fmt.Println("server start on %v", listenOn)
-	http.HandleFunc("/request", rtblite.Request)        //设定访问的路径
-	http.HandleFunc("/impression", rtblite.Impression)  //设定访问的路径
-	http.HandleFunc("/click", rtblite.Click)            //设定访问的路径
-	http.HandleFunc("/td_postback", rtblite.Conversion) //设定访问的路径
-	http.ListenAndServe(listenOn, nil)                  //设定端口和handler
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/request", rtblite.Request)       //设定访问的路径
+	mux.HandleFunc("/impression", rtblite.Impression) //设定访问的路径
+	mux.HandleFunc("/click", rtblite.Click)           //设定访问的路径
+	mux.HandleFunc("/event", rtblite.Conversion)      //设定访问的路径
+
+	fmt.Println("server start on ", listenOn)
+
+	if err := gracehttp.Serve(
+		&http.Server{
+			Addr:    listenOn,
+			Handler: mux},
+	); err != nil {
+		fmt.Println(err.Error())
+	}
+
+	// if err := http.ListenAndServe(listenOn, mux); err != nil {
+	// 	fmt.Println(err.Error())
+	// }
 }

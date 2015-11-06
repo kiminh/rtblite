@@ -79,12 +79,12 @@ type Inventory struct {
 	Frequency int `json:"user_frequency"`
 }
 
-type InventoryQueue []*Inventory
+type InventoryCollection []*Inventory
 
 var r = rand.New(rand.NewSource(time.Now().Unix()))
 
-func (iq InventoryQueue) Len() int { return len(iq) }
-func (iq InventoryQueue) Less(i, j int) bool {
+func (iq InventoryCollection) Len() int { return len(iq) }
+func (iq InventoryCollection) Less(i, j int) bool {
 	iIndex, iOk := priorityTable[iq[i].packageName]
 	if !iOk {
 		iIndex = r.Intn(1000) + len(priorityTable)
@@ -100,12 +100,12 @@ func (iq InventoryQueue) Less(i, j int) bool {
 	return iIndex < jIndex
 }
 
-func (iq InventoryQueue) Swap(i, j int) { iq[i], iq[j] = iq[j], iq[i] }
+func (iq InventoryCollection) Swap(i, j int) { iq[i], iq[j] = iq[j], iq[i] }
 
 type InventoryCache struct {
 	databaseHandler *sql.DB
 	configure       *Configure
-	cacheByCountry  map[string]InventoryQueue
+	cacheByCountry  map[string]InventoryCollection
 
 	lock   sync.Mutex
 	logger *logging.Logger
@@ -164,7 +164,7 @@ func (inv *InventoryCache) Load() error {
 		return err
 	}
 	sqlTimeSpent := meter.TimeElapsed()
-	countryMap := make(map[string]InventoryQueue)
+	countryMap := make(map[string]InventoryCollection)
 	countLoaded := 0
 	errorCount := 0
 	for rows.Next() {
@@ -180,7 +180,7 @@ func (inv *InventoryCache) Load() error {
 			continue
 		}
 		if _, ok := countryMap[record.country]; !ok {
-			countryMap[record.country] = make(InventoryQueue, 0)
+			countryMap[record.country] = make(InventoryCollection, 0)
 		}
 		countryMap[record.country] = append(countryMap[record.country], &record)
 		countLoaded += 1
@@ -191,24 +191,24 @@ func (inv *InventoryCache) Load() error {
 		sort.Sort(queue)
 	}
 	sortTimeSpent := meter.TimeElapsed() - recordTimeSpent
-	uniqueMap := make(map[string]InventoryQueue)
-	for countryCode, queue := range countryMap {
-		newQueue := InventoryQueue{}
-		var lastRecord *Inventory = nil
-		for _, record := range queue {
-			if lastRecord != nil && lastRecord.packageName == record.packageName {
-				continue
-			} else {
-				newQueue = append(newQueue, record)
-				lastRecord = record
-			}
-		}
-		uniqueMap[countryCode] = newQueue
-	}
-	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
-	inv.cacheByCountry = uniqueMap
+	//	uniqueMap := make(map[string]InventoryCollection)
+	//	for countryCode, queue := range countryMap {
+	//		newQueue := InventoryCollection{}
+	//		var lastRecord *Inventory = nil
+	//		for _, record := range queue {
+	//			if lastRecord != nil && lastRecord.packageName == record.packageName {
+	//				continue
+	//			} else {
+	//				newQueue = append(newQueue, record)
+	//				lastRecord = record
+	//			}
+	//		}
+	//		uniqueMap[countryCode] = newQueue
+	//	}
+	//	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
+	inv.cacheByCountry = countryMap
 	totallySpent := meter.TimeElapsed()
-	inv.logger.Notice("cache updated, totallySpent = %v,  sqlTimeSpent = %v, recordTimeSpent = %v, sortTimeSpent = %v, uniqTimeSpent = %v",
-		totallySpent, sqlTimeSpent, recordTimeSpent, sortTimeSpent, uniqTimeSpent)
+	inv.logger.Notice("cache updated, totallySpent = %v,  sqlTimeSpent = %v, recordTimeSpent = %v, sortTimeSpent = %v",
+		totallySpent, sqlTimeSpent, recordTimeSpent, sortTimeSpent)
 	return nil
 }
