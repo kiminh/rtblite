@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"strconv"
 	"time"
 )
 
@@ -38,20 +37,11 @@ type ModelData struct {
 }
 
 func GetModelDataLog(req *ParsedRequest, record *Inventory, event string) ([]byte, error) {
-	network, err := strconv.Atoi(req.Network)
-	if err != nil {
-		return []byte{}, err
-	}
 	data := ModelData{
-		ConnectionType: network,
-		C:              req.C,
-		UserId:         req.Cid,
-		IpLib: &IpLib{
-			IpHashLevel1: HiveHash(req.Location.CountryCode),
-			IpHashLevel2: HiveHash(req.Location.CountryCode + "|" + req.Location.Region),
-			IpHashLevel3: HiveHash(req.Location.CountryCode + "|" + req.Location.Region + "|" + req.Location.City),
-			CountryCode:  req.Location.CountryCode,
-		},
+		ConnectionType:   req.Network,
+		C:                req.C,
+		UserId:           req.Cid,
+		IpLib:            req.IpLib,
 		Lauguage:         req.L,
 		P:                req.P,
 		Cc:               req.Cc,

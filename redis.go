@@ -46,7 +46,7 @@ func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives *InventoryCol
 	frIds := make([]interface{}, creatives.Len())
 	for index, value := range creatives.Data {
 		frIds[index] = fmt.Sprintf("%v%v_%v",
-			rw.configure.RedisFrequencyPrefix, req.Cid, value.AdId)
+			rw.configure.RedisFrequencyPrefix, req.Cid, value.ModelSign1)
 	}
 	if response, err = redis.Ints(conn.Do("mget", frIds...)); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())
@@ -54,12 +54,12 @@ func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives *InventoryCol
 	return
 }
 
-func (rw *RedisWrapper) IncrFrequency(req *ParsedRequest, adId int) (err error) {
+func (rw *RedisWrapper) IncrFrequency(req *ParsedRequest, modelSign1 int) (err error) {
 	conn := rw.redisPool.Get()
 	defer conn.Close()
 
 	frId := fmt.Sprintf("%v%v_%v",
-		rw.configure.RedisFrequencyPrefix, req.Cid, adId)
+		rw.configure.RedisFrequencyPrefix, req.Cid, modelSign1)
 	if _, err = conn.Do("incr", frId); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())
 	}
@@ -101,7 +101,11 @@ func (rw *RedisWrapper) GetRequest(id string) (*ParsedRequest, error) {
 	conn := rw.redisPool.Get()
 	defer conn.Close()
 	if response, err := redis.Bytes(conn.Do("get", rw.configure.RedisCachePrefix+id)); err != nil {
-		rw.logger.Warning("redis error: %v", err.Error())
+		if err == redis.ErrNil {
+			// 查不到数据算正常
+		} else {
+			rw.logger.Warning("redis error: %v", err.Error())
+		}
 		return nil, err
 	} else {
 		req := &ParsedRequest{}

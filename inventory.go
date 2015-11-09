@@ -44,7 +44,7 @@ type Inventory struct {
 	Extension   string `json:"extension"`
 	MinOsNum    int    `json:"min_os_num"`
 	MaxOsNum    int    `json:"max_os_num"`
-	Ts          []byte `json:"ts"`
+	Ts          string `json:"ts"`
 
 	Frequency int `json:"user_frequency"`
 }
@@ -149,6 +149,7 @@ func RowToObject(row RowScanner, record *Inventory) error {
 		&record.MaxOsNum, &record.MinOsNum, &record.Ts)
 }
 
+// 用ad_id查询，包含已下线的物料
 func (inv *InventoryCache) FetchOne(adId int, record *Inventory) error {
 	row := inv.databaseHandler.QueryRow(`
 		SELECT id, ad_id, package_name,
@@ -158,7 +159,8 @@ func (inv *InventoryCache) FetchOne(adId int, record *Inventory) error {
 		       status, model_sign1, extensions,
 		       max_os_num, min_os_num, ts
 		FROM inventory
-		WHERE status='online' AND ad_id=?
+		WHERE ad_id=?
+		LIMIT 1
 	`, adId)
 	return RowToObject(row, record)
 }

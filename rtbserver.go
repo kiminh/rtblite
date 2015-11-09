@@ -84,24 +84,23 @@ func (rl *RtbLite) CacheUpdateLoop() error {
 
 type ParsedRequest struct {
 	Limit         int                  `json:"limit"`
-	PlacementId   string               `json:"placement_id"`
-	L             string               `json:"l"`
-	M             string               `json:"m"`
+	PlacementId   string               `json:"adunit_id"`
+	L             string               `json:"language"`
+	M             string               `json:"carrier"`
 	Ip            string               `json:"ip"`
-	Cid           string               `json:"cid"`
+	Cid           string               `json:"user_id"`
 	OsVersion     string               `json:"os_version"`
-	ClientVersion string               `json:"client_version"`
-	Network       string               `json:"network"`
+	ClientVersion string               `json:"app_version"`
+	Network       int                  `json:"connection_type"`
 	Cc            string               `json:"cc"`
 	Hp            string               `json:"hp"`
 	P             string               `json:"p"`
 	C             string               `json:"c"`
 	Adgroup       string               `json:"adgroup_id"`
-	Creatives     []*InventoryForRedis `json:"creatives"`
-	Id            string               `json:"id"`
-
-	Location     *libgeo.Location `json:"location"`
-	OsVersionNum int
+	Creatives     []*InventoryForRedis `json:"selected_creatives"`
+	Id            string               `json:"request_id"`
+	IpLib         *IpLib               `json:"ip_lib"`
+	OsVersionNum  int
 }
 
 func (rl *RtbLite) Parse(req *http.Request) *ParsedRequest {
@@ -119,17 +118,29 @@ func (rl *RtbLite) Parse(req *http.Request) *ParsedRequest {
 	r.OsVersion = req.URL.Query().Get("os_version")
 	r.OsVersionNum = VersionToInt(r.OsVersion)
 	r.ClientVersion = req.URL.Query().Get("client_version")
-	r.Network = req.URL.Query().Get("network")
 	r.Cc = req.URL.Query().Get("cc")
 	r.Hp = req.URL.Query().Get("hp")
 	r.P = req.URL.Query().Get("p")
 	r.C = req.URL.Query().Get("c")
-
 	r.Id = uuid.NewV4().Hex()
-	r.Location = rl.geoDb.GetLocationByIP(r.Ip)
-	if r.Location == nil {
-		r.Location = &libgeo.Location{}
+
+	if network, err := strconv.Atoi(req.URL.Query().Get("network")); err == nil {
+		r.Network = network
+	} else {
+		r.Network = 0
 	}
+
+	location := rl.geoDb.GetLocationByIP(r.Ip)
+	if location == nil {
+		location = &libgeo.Location{}
+	}
+	r.IpLib = &IpLib{
+		IpHashLevel1: HiveHash(location.CountryCode),
+		IpHashLevel2: HiveHash(location.CountryCode + "|" + location.Region),
+		IpHashLevel3: HiveHash(location.CountryCode + "|" + location.Region + "|" + location.City),
+		CountryCode:  location.CountryCode,
+	}
+
 	return r
 }
 
@@ -139,6 +150,9 @@ func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryColle
 	lastPackageName := ""
 	for _, record := range creatives.Data {
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
+			continue
+		}
+		if record.Frequency > rl.configure.RedisFrequencyPerId {
 			continue
 		}
 		if lastPackageName != record.PackageName {
@@ -160,6 +174,9 @@ func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives *InventoryCollec
 	for _, index := range randomSelect {
 		record := creatives.Data[index]
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
+			continue
+		}
+		if record.Frequency > rl.configure.RedisFrequencyPerId {
 			continue
 		}
 		if _, ok := uniqueCreatives[record.PackageName]; !ok {
@@ -192,7 +209,7 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 	defer rl.profiler.OnRequest(time.Now().Sub(start).Seconds())
 
 	parsed := rl.Parse(req)
-	filteredByCountry, ok := rl.cache.cacheByCountry[parsed.Location.CountryCode]
+	filteredByCountry, ok := rl.cache.cacheByCountry[parsed.IpLib.CountryCode]
 	if !ok {
 		io.WriteString(rw, "")
 		return
@@ -212,8 +229,10 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 		clickTracker := "http://" + rl.configure.ClickAddress + "/click?final_url=" +
 			url.QueryEscape(record.ClickUrl+"&"+GetParam(index, parsed, record)) + "&param=" + creativeId
 		impressionTracker := "http://" + rl.configure.CallbackAddress + "/impression?param=" + creativeId
+		iconUrl := record.IconUrl
+		bannerUrl := record.BannerUrl
 		ret = append(ret, fmt.Sprintf(`{ "bundle_id": "%v",  "click_url": "%v", "creative_url": "%v", "icon_url": "%v", "impression_url": "%v", "title": "%v" }`,
-			record.PackageName, clickTracker, record.BannerUrl, record.IconUrl, impressionTracker, record.Label))
+			record.PackageName, clickTracker, bannerUrl, iconUrl, impressionTracker, record.Label))
 	}
 	response := `{"ad": [` + strings.Join(ret, ",") + `], "error_code": 0, "error_message": "success"}`
 	io.WriteString(rw, response)
@@ -234,24 +253,32 @@ func (rl *RtbLite) Impression(rw http.ResponseWriter, req *http.Request) {
 		rl.logger.Error("fail to get id from param: %v", err.Error())
 		return
 	}
-	response := `{"error_code": 0, "error_message": "success"}`
-	io.WriteString(rw, response)
+
+	finalUrl := req.URL.Query().Get("final_url")
+	if len(finalUrl) > 0 {
+		http.Redirect(rw, req, finalUrl, 302)
+	} else {
+		response := `{"error_code": 0, "error_message": "success"}`
+		io.WriteString(rw, response)
+	}
+
 	// 提前把结果发出去，后续操作可以慢慢做
 	go func() {
 		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
 		parsed, err := rl.redisWrapper.GetRequest(id)
 		if err != nil {
-			rl.logger.Error(err.Error())
+			rl.logger.Error("join failed [err: %s][param: %s]", err.Error(), param)
 		} else {
-			rl.redisWrapper.IncrFrequency(parsed, parsed.Creatives[index].AdId)
 			record := &Inventory{}
 			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
-				rl.logger.Error(err.Error())
+				rl.logger.Error("fetch from db failed [err: %s][param: %s]", err.Error(), param)
 				return
 			}
+			rl.redisWrapper.IncrFrequency(parsed, record.ModelSign1)
 			rl.redisWrapper.SetExpire(param, rl.configure.RedisImpressionTimeout)
 			rl.producer.Log(rl.configure.KafkaImressionTopic, GetEventKafkaMessage(parsed, "impression", record))
 
+			// model
 			if rl.saveFile != nil {
 				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
 					rl.logger.Warning(err.Error())
@@ -287,17 +314,21 @@ func (rl *RtbLite) Click(rw http.ResponseWriter, req *http.Request) {
 		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
 		parsed, err := rl.redisWrapper.GetRequest(id)
 		if err != nil {
-			rl.logger.Error(err.Error())
+			rl.logger.Error("join failed [err: %s][param: %s]", err.Error(), param)
 		} else {
 			record := &Inventory{}
 			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
-				rl.logger.Error(err.Error())
+				rl.logger.Error("fetch from db failed [err: %s][param: %s]", err.Error(), param)
 				return
 			}
 			rl.redisWrapper.SetExpire(param, rl.configure.RedisClickTimeout)
 			rl.producer.Log(rl.configure.KafkaClickTopic, GetEventKafkaMessage(parsed, "click", record))
+
+			// model
 			if rl.saveFile != nil {
-				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
+				if data, err := GetModelDataLog(parsed, record, "click"); err != nil {
+					rl.logger.Warning(err.Error())
+				} else {
 					if _, err := rl.saveFile.WriteString(fmt.Sprintln(string(data))); err != nil {
 						rl.logger.Warning(err.Error())
 					}
@@ -323,17 +354,21 @@ func (rl *RtbLite) Conversion(rw http.ResponseWriter, req *http.Request) {
 		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
 		parsed, err := rl.redisWrapper.GetRequest(id)
 		if err != nil {
-			rl.logger.Error(err.Error())
+			rl.logger.Error("join failed [err: %s][param: %s]", err.Error(), param)
 		} else {
 			record := &Inventory{}
 			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
-				rl.logger.Error(err.Error())
+				rl.logger.Error("fetch from db failed [err: %s][param: %s]", err.Error(), param)
 				return
 			}
 			rl.redisWrapper.SetExpire(param, rl.configure.RedisConversionTimeout)
 			rl.producer.Log(rl.configure.KafkaConversionTopic, GetEventKafkaMessage(parsed, "td_postback", record))
+
+			// model
 			if rl.saveFile != nil {
-				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
+				if data, err := GetModelDataLog(parsed, record, "activate"); err != nil {
+					rl.logger.Warning(err.Error())
+				} else {
 					if _, err := rl.saveFile.WriteString(fmt.Sprintln(string(data))); err != nil {
 						rl.logger.Warning(err.Error())
 					}
