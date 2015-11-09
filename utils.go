@@ -59,7 +59,8 @@ func GetParam(index int, req *ParsedRequest, record *Inventory) string {
 		case "bigtree2":
 			param = "p1=subid1&v1=" + param + "&p2=subid2&v2=&p3=subid3&v3="
 		case "bigtree3":
-			param = "postback=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(param)))
+			apusCallback := "http://cb.apusapps.com/callback.php?subid1=" + param + "&subid2=&subid3="
+			param = "postback=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(apusCallback)))
 		case "bigtree4":
 			param = "aff_sub=" + param + "&aff_sub2=&aff_sub3=&aff_sub5="
 		case "bigtree5":

@@ -101,7 +101,11 @@ func (rw *RedisWrapper) GetRequest(id string) (*ParsedRequest, error) {
 	conn := rw.redisPool.Get()
 	defer conn.Close()
 	if response, err := redis.Bytes(conn.Do("get", rw.configure.RedisCachePrefix+id)); err != nil {
-		rw.logger.Warning("redis error: %v", err.Error())
+		if err == redis.ErrNil {
+			// 查不到数据算正常
+		} else {
+			rw.logger.Warning("redis error: %v", err.Error())
+		}
 		return nil, err
 	} else {
 		req := &ParsedRequest{}
