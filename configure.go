@@ -10,12 +10,15 @@ import (
 )
 
 type Configure struct {
-	HttpAddress string `default:"0.0.0.0:8705"`
+	HttpAddress     string `default:"0.0.0.0:8705"`
+	CallbackAddress string `default:"0.0.0.0:8705"`
+	ClickAddress    string `default:"0.0.0.0:8705"`
 
-	MySqlAddress  string `default:"localhost:3306"`
-	MySqlUser     string `default:"root"`
-	MySqlPassword string `default:""`
-	MySqlDatabase string `default:""`
+	MySqlAddress        string `default:"localhost:3306"`
+	MySqlUser           string `default:"root"`
+	MySqlPassword       string `default:""`
+	MySqlDatabase       string `default:""`
+	MysqlUpdateInterval int    `default:"60"`
 
 	KafkaEnable          bool   `default:"true"`
 	KafkaBrokers         string `default:"localhost:9092"`
@@ -24,12 +27,25 @@ type Configure struct {
 	KafkaClickTopic      string `default:"click"`
 	KafkaConversionTopic string `default:"td_postback"`
 
-	RedisAddress         string `default:"localhost:6379"`
-	RedisCachePrefix     string `default:"param:"`
-	RedisFrequencyPrefix string `default:"fr:"`
+	RedisAddress           string `default:"localhost:6379"`
+	RedisCachePrefix       string `default:"param:"`
+	RedisFrequencyPrefix   string `default:"fr:"`
+	RedisRequestTimeout    int    `default:"43200"`
+	RedisImpressionTimeout int    `default:"86400"`
+	RedisClickTimeout      int    `default:"259200"`
+	RedisConversionTimeout int    `default:"43200"`
 
 	LogLevel string `default:"debug"`
 	LogDir   string `default:""`
+
+	ProfilerEnable   bool `default:"true"`
+	ProfilerInterval int  `default:"10"`
+
+	TrafficRandom int `default:"80"`
+
+	ModelDataSaveDir string `default:"./"`
+
+	RankTablePath string `default:"adrank.json"`
 }
 
 func NewConfigure() *Configure {
@@ -70,6 +86,21 @@ func (c *Configure) LoadFromFile(file string) error {
 		return err
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Configure) SaveToFile(file string) error {
+	configFile, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	content, err := json.MarshalIndent(c, "", "    ")
+	if err != nil {
+		return err
+	}
+	if _, err := configFile.Write(content); err != nil {
 		return err
 	}
 	return nil

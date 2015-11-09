@@ -26,100 +26,114 @@ func (tm *TimeMeter) TimeElapsed() float64 {
 	return float64(time.Now().UnixNano()-tm.begin.UnixNano()) / 1e9
 }
 
-var priorityTable = map[string]int{
-	"net.peakgames.mobile.spades.android":    0,
-	"com.ebay.annunci":                       1,
-	"com.mcdonalds.app":                      2,
-	"com.king.alphabettysaga":                3,
-	"jp.coloplni.wcatus":                     4,
-	"my.com.fourgames.baby":                  5,
-	"com.tonaton":                            6,
-	"com.subway.mobile.subwayapp03":          7,
-	"com.netmarble.goldenagegb":              8,
-	"net.peakgames.mobile.canakokey.android": 9,
-	"air.com.sgn.bookoflife.gp":              10,
-	"com.sgn.pandapop.gp":                    11,
-	"ru.beeline.services":                    12,
-	"com.wego.android":                       13,
-	"jp.coloplni.scs":                        14,
-	"com.mercadopago.wallet":                 15,
-	"vn.com.mobagame.ldxy":                   16,
-	"com.bukalapak.android":                  17,
-	"org.altruist.BajajExperia":              18,
-	"com.chaatz":                             19,
-	"com.apt.publish.dsm":                    20,
-	"com.flipkart.android":                   21,
-	"com.app.tokobagus.betterb":              22,
-	"my.ezjoy.coh":                           23,
-	"com.deliveryclub":                       24,
-	"com.netmarble.sknightsgb":               25,
-	"com.opera.mini.native":                  26,
-}
-
 type Inventory struct {
-	id          int
-	AdId        int `json:"ad_id"`
-	packageName string
-	iconUrl     string
-	label       string
-	clickUrl    string
-	price       string
-	maxOs       string
-	minOs       string
-	bannerUrl   string
-	country     string
-	adType      string
-	status      string
-	modelSign1  int
-	extension   string
-	minOsNum    int
-	maxOsNum    int
-	ts          []byte
+	Id          int    `json:"id"`
+	AdId        int    `json:"ad_id"`
+	PackageName string `json:"package_name"`
+	IconUrl     string `json:"icon_url"`
+	Label       string `json:"label"`
+	ClickUrl    string `json:"click_url"`
+	Price       string `json:"price"`
+	MaxOs       string `json:"max_os"`
+	MinOs       string `json:"min_os"`
+	BannerUrl   string `json:"banner_url"`
+	Country     string `json:"country"`
+	AdType      string `json:"ad_type"`
+	Status      string `json:"status"`
+	ModelSign1  int    `json:"model_sign1"`
+	Extension   string `json:"extension"`
+	MinOsNum    int    `json:"min_os_num"`
+	MaxOsNum    int    `json:"max_os_num"`
+	Ts          []byte `json:"ts"`
 
 	Frequency int `json:"user_frequency"`
 }
 
-type InventoryQueue []*Inventory
+type InventoryForRedis struct {
+	AdId      int `json:"ad_id"`
+	Frequency int `json:"user_frequency"`
+}
 
-var r = rand.New(rand.NewSource(time.Now().Unix()))
+type InventoryCollection struct {
+	Data          []*Inventory
+	PriorityTable *RankTable
+	r             *rand.Rand
+}
 
-func (iq InventoryQueue) Len() int { return len(iq) }
-func (iq InventoryQueue) Less(i, j int) bool {
-	iIndex, iOk := priorityTable[iq[i].packageName]
-	if !iOk {
-		iIndex = r.Intn(1000) + len(priorityTable)
+func NewInventoryCollection(rankTable *RankTable) *InventoryCollection {
+	return &InventoryCollection{
+		Data:          make([]*Inventory, 0),
+		PriorityTable: rankTable,
+		r:             rand.New(rand.NewSource(time.Now().Unix())),
 	}
-	jIndex, jOk := priorityTable[iq[j].packageName]
+}
+
+func (iq *InventoryCollection) Append(inv *Inventory) {
+	iq.Data = append(iq.Data, inv)
+}
+
+func (iq InventoryCollection) Len() int { return len(iq.Data) }
+func (iq InventoryCollection) Less(i, j int) bool {
+	iIndex, iOk := iq.PriorityTable.rank[iq.Data[i].PackageName]
+	if !iOk {
+		iIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()
+	}
+	jIndex, jOk := iq.PriorityTable.rank[iq.Data[j].PackageName]
 	if !jOk {
-		jIndex = r.Intn(1000) + len(priorityTable)
+		jIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()
 	}
 
 	if iIndex == jIndex {
-		return iq[i].price > iq[j].price
+		return iq.Data[i].Price > iq.Data[j].Price
 	}
 	return iIndex < jIndex
 }
 
-func (iq InventoryQueue) Swap(i, j int) { iq[i], iq[j] = iq[j], iq[i] }
+func (iq InventoryCollection) Swap(i, j int) { iq.Data[i], iq.Data[j] = iq.Data[j], iq.Data[i] }
 
 type InventoryCache struct {
 	databaseHandler *sql.DB
 	configure       *Configure
-	cacheByCountry  map[string]InventoryQueue
+	cacheByCountry  map[string]*InventoryCollection
+	rankTable       *RankTable
 
 	lock   sync.Mutex
 	logger *logging.Logger
 }
 
-func NewInventoryCache(configure *Configure, logger *logging.Logger) *InventoryCache {
+func NewInventoryCache(configure *Configure, logger *logging.Logger) (*InventoryCache, error) {
+	rankTable, err := NewRankTable(configure.RankTablePath)
+	if err != nil {
+		return nil, err
+	}
+	if err = rankTable.Load(); err != nil {
+		return nil, err
+	}
 	return &InventoryCache{
 		configure: configure,
 		logger:    logger,
-	}
+		rankTable: rankTable,
+	}, nil
 }
 
-func (inv *InventoryCache) Reconnect() (err error) {
-	return
+func (inv *InventoryCache) UpdateRankTable() error {
+	inv.lock.Lock()
+	defer inv.lock.Unlock()
+	inv.logger.Notice("begin to update rank table")
+	err := inv.rankTable.Load()
+	if err != nil {
+		inv.logger.Notice("updating interrupted, %v", err.Error())
+	} else {
+		inv.logger.Notice("updating done, %v item(s) loaded", inv.rankTable.Len())
+	}
+	return err
+}
+
+func (inv *InventoryCache) GetRankTable() *RankTable {
+	inv.lock.Lock()
+	defer inv.lock.Unlock()
+	rankTable := inv.rankTable
+	return rankTable
 }
 
 type RowScanner interface {
@@ -127,16 +141,25 @@ type RowScanner interface {
 }
 
 func RowToObject(row RowScanner, record *Inventory) error {
-	return row.Scan(&record.id, &record.AdId, &record.packageName,
-		&record.iconUrl, &record.label, &record.clickUrl,
-		&record.price, &record.maxOs, &record.minOs,
-		&record.bannerUrl, &record.country, &record.adType,
-		&record.status, &record.modelSign1, &record.extension,
-		&record.minOsNum, &record.maxOsNum, &record.ts)
+	return row.Scan(&record.Id, &record.AdId, &record.PackageName,
+		&record.IconUrl, &record.Label, &record.ClickUrl,
+		&record.Price, &record.MaxOs, &record.MinOs,
+		&record.BannerUrl, &record.Country, &record.AdType,
+		&record.Status, &record.ModelSign1, &record.Extension,
+		&record.MaxOsNum, &record.MinOsNum, &record.Ts)
 }
 
 func (inv *InventoryCache) FetchOne(adId int, record *Inventory) error {
-	row := inv.databaseHandler.QueryRow("select * from inventory where status='online' and ad_id=?", adId)
+	row := inv.databaseHandler.QueryRow(`
+		SELECT id, ad_id, package_name,
+		       icon_url, label, click_url,
+		       price, max_os, min_os,
+		       banner_url, country, ad_type,
+		       status, model_sign1, extensions,
+		       max_os_num, min_os_num, ts
+		FROM inventory
+		WHERE status='online' AND ad_id=?
+	`, adId)
 	return RowToObject(row, record)
 }
 
@@ -156,7 +179,16 @@ func (inv *InventoryCache) Load() error {
 		}
 	}
 	meter := NewTimeMeter()
-	rows, err := inv.databaseHandler.Query("select * from inventory where status='online'")
+	rows, err := inv.databaseHandler.Query(`
+		SELECT id, ad_id, package_name,
+		       icon_url, label, click_url,
+		       price, max_os, min_os,
+		       banner_url, country, ad_type,
+		       status, model_sign1, extensions,
+		       max_os_num, min_os_num, ts
+		FROM inventory
+		WHERE status='online'
+	`)
 	if err != nil {
 		// 释放掉下次重连
 		inv.logger.Warning("fail to execute sql: %v", err.Error())
@@ -164,7 +196,7 @@ func (inv *InventoryCache) Load() error {
 		return err
 	}
 	sqlTimeSpent := meter.TimeElapsed()
-	countryMap := make(map[string]InventoryQueue)
+	countryMap := make(map[string]*InventoryCollection)
 	countLoaded := 0
 	errorCount := 0
 	for rows.Next() {
@@ -179,10 +211,10 @@ func (inv *InventoryCache) Load() error {
 			errorCount += 1
 			continue
 		}
-		if _, ok := countryMap[record.country]; !ok {
-			countryMap[record.country] = make(InventoryQueue, 0)
+		if _, ok := countryMap[record.Country]; !ok {
+			countryMap[record.Country] = NewInventoryCollection(inv.rankTable)
 		}
-		countryMap[record.country] = append(countryMap[record.country], &record)
+		countryMap[record.Country].Append(&record)
 		countLoaded += 1
 	}
 	recordTimeSpent := meter.TimeElapsed() - sqlTimeSpent
@@ -191,24 +223,24 @@ func (inv *InventoryCache) Load() error {
 		sort.Sort(queue)
 	}
 	sortTimeSpent := meter.TimeElapsed() - recordTimeSpent
-	uniqueMap := make(map[string]InventoryQueue)
-	for countryCode, queue := range countryMap {
-		newQueue := InventoryQueue{}
-		var lastRecord *Inventory = nil
-		for _, record := range queue {
-			if lastRecord != nil && lastRecord.packageName == record.packageName {
-				continue
-			} else {
-				newQueue = append(newQueue, record)
-				lastRecord = record
-			}
-		}
-		uniqueMap[countryCode] = newQueue
-	}
-	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
-	inv.cacheByCountry = uniqueMap
+	//	uniqueMap := make(map[string]InventoryCollection)
+	//	for countryCode, queue := range countryMap {
+	//		newQueue := InventoryCollection{}
+	//		var lastRecord *Inventory = nil
+	//		for _, record := range queue {
+	//			if lastRecord != nil && lastRecord.packageName == record.packageName {
+	//				continue
+	//			} else {
+	//				newQueue = append(newQueue, record)
+	//				lastRecord = record
+	//			}
+	//		}
+	//		uniqueMap[countryCode] = newQueue
+	//	}
+	//	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
+	inv.cacheByCountry = countryMap
 	totallySpent := meter.TimeElapsed()
-	inv.logger.Notice("cache updated, totallySpent = %v,  sqlTimeSpent = %v, recordTimeSpent = %v, sortTimeSpent = %v, uniqTimeSpent = %v",
-		totallySpent, sqlTimeSpent, recordTimeSpent, sortTimeSpent, uniqTimeSpent)
+	inv.logger.Notice("cache updated, totallySpent = %v,  sqlTimeSpent = %v, recordTimeSpent = %v, sortTimeSpent = %v",
+		totallySpent, sqlTimeSpent, recordTimeSpent, sortTimeSpent)
 	return nil
 }
