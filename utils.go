@@ -37,21 +37,23 @@ func VersionToInt(versionString string) int {
 
 func GetParam(index int, req *ParsedRequest, record *Inventory) string {
 	param := ""
-	price, err := strconv.ParseFloat(record.price, 64)
+	price, err := strconv.ParseFloat(record.Price, 64)
 	if err != nil {
 		price = 0
 	}
-	if strings.ToLower(record.adType) == "bigtree6" {
+	price /= 1e6
+
+	if strings.ToLower(record.AdType) == "bigtree6" {
 		param = fmt.Sprintf("5_2_%v_%v_%v_%v_%v_%v_%v_%v-%v",
-			req.Cid, record.adType, req.Cc, req.Hp, req.P, req.C,
+			req.Cid, record.AdType, req.Cc, req.Hp, req.P, req.C,
 			req.ClientVersion, req.Id, index)
 		param = fmt.Sprintf("s2=%v&s3=%v&s4=%v&s5=c7caa578-763f-44de-8673-8f1bfbb3c3c8&s1=",
-			record.packageName, price, param)
+			record.PackageName, price, param)
 	} else {
 		param += fmt.Sprintf("5_1_%v_%v_%v_%v_%v_%v_%v_%v_%v_%v-%v",
-			req.Cid, req.Cc, record.adType, req.Hp, req.P, req.C,
-			req.ClientVersion, record.packageName, price, req.Id, index)
-		switch strings.ToLower(record.adType) {
+			req.Cid, req.Cc, record.AdType, req.Hp, req.P, req.C,
+			req.ClientVersion, record.PackageName, price, req.Id, index)
+		switch strings.ToLower(record.AdType) {
 		case "bigtree1":
 			param = "subid1=" + param + "&subid2=&subid3=&m.gaid="
 		case "bigtree2":

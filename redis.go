@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"time"
 
 	"github.com/garyburd/redigo/redis"
@@ -37,11 +40,11 @@ func NewRedisWrapper(configure *Configure, logger *logging.Logger) *RedisWrapper
 	}
 }
 
-func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives InventoryCollection) (response []int, err error) {
+func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives *InventoryCollection) (response []int, err error) {
 	conn := rw.redisPool.Get()
 	defer conn.Close()
 	frIds := make([]interface{}, creatives.Len())
-	for index, value := range creatives {
+	for index, value := range creatives.Data {
 		frIds[index] = fmt.Sprintf("%v%v_%v",
 			rw.configure.RedisFrequencyPrefix, req.Cid, value.AdId)
 	}
@@ -63,13 +66,31 @@ func (rw *RedisWrapper) IncrFrequency(req *ParsedRequest, adId int) (err error) 
 	return
 }
 
-func (rw *RedisWrapper) SaveRequest(req *ParsedRequest, creatives InventoryCollection, timeout int) error {
+func (rw *RedisWrapper) SaveRequest(req *ParsedRequest, creatives []*Inventory, timeout int) error {
 	conn := rw.redisPool.Get()
 	defer conn.Close()
-	req.Creatives = creatives
-	if body, err := json.Marshal(*req); err != nil {
+	creativesForRedis := make([]*InventoryForRedis, len(creatives))
+	for index, value := range creatives {
+		creativesForRedis[index] = &InventoryForRedis{
+			AdId:      value.AdId,
+			Frequency: value.Frequency,
+		}
+	}
+	req.Creatives = creativesForRedis
+	body, err := json.Marshal(*req)
+	if err != nil {
 		return err
-	} else if _, err := conn.Do("setex", rw.configure.RedisCachePrefix+req.Id, timeout, body); err != nil {
+	}
+	var buf bytes.Buffer
+	zlibWriter, err := zlib.NewWriterLevel(&buf, zlib.BestSpeed)
+	if err != nil {
+		return err
+	}
+	if _, err := zlibWriter.Write(body); err != nil {
+		return err
+	}
+	zlibWriter.Close()
+	if _, err := conn.Do("setex", rw.configure.RedisCachePrefix+req.Id, timeout, buf.Bytes()); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())
 		return err
 	}
@@ -84,7 +105,12 @@ func (rw *RedisWrapper) GetRequest(id string) (*ParsedRequest, error) {
 		return nil, err
 	} else {
 		req := &ParsedRequest{}
-		if err := json.Unmarshal(response, req); err != nil {
+		buf := bytes.NewReader(response)
+		if zlibReader, err := zlib.NewReader(buf); err != nil {
+			return nil, err
+		} else if body, err := ioutil.ReadAll(zlibReader); err != nil {
+			return nil, err
+		} else if err := json.Unmarshal(body, req); err != nil {
 			return nil, err
 		} else {
 			return req, nil

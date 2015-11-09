@@ -7,6 +7,7 @@ import (
 
 	"github.com/Shopify/sarama"
 	"github.com/op/go-logging"
+	"strconv"
 )
 
 type KafkaWrapper struct {
@@ -47,46 +48,49 @@ func (kw *KafkaWrapper) Log(topic string, message string) {
 }
 
 func GetEventKafkaMessage(req *ParsedRequest, event string, record *Inventory) string {
-	carrier := strings.Split(req.M, ",")[0]
-	if carrier == "" {
-		carrier = "-1"
+	// carrier只取第一个
+	carrier, err := strconv.Atoi(strings.Split(req.M, ",")[0])
+	if err != nil {
+		carrier = -1
 	}
+
 	message := []interface{}{
 		time.Now().UTC().Format("2006-01-02 15:04:05Z"),
 		req.PlacementId,
-		record.adType,
-		HiveHash(record.iconUrl),
-		record.packageName,
+		record.AdType,
+		HiveHash(record.IconUrl),
+		record.PackageName,
 		carrier,
-		NanIfEmpty(req.countryCode),
+		NanIfEmpty(req.Location.CountryCode),
 		NanIfEmpty(req.OsVersion),
 		NanIfEmpty(req.ClientVersion),
 		NanIfEmpty(req.Network),
 		req.Adgroup,
+		NanIfEmpty(req.Cid),
 	}
 	switch event {
-	case "response":
-		message = append(message, 1, 0, 0, 0, 0)
 	case "impression":
 		message = append(message, 0, 1, 0, 0, 0)
 	case "click":
 		message = append(message, 0, 0, 1, 0, 0)
 	case "td_postback":
-		message = append(message, 0, 0, 0, 1, record.price)
+		message = append(message, 0, 0, 0, 1, record.Price)
 	}
-	return fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v", message...)
+	return fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v", message...)
 }
 
 func GetReqeustKafkaMessage(req *ParsedRequest) string {
-	carrier := strings.Split(req.M, ",")[0]
-	if carrier == "" {
-		carrier = "-1"
+	// carrier只取第一个
+	carrier, err := strconv.Atoi(strings.Split(req.M, ",")[0])
+	if err != nil {
+		carrier = -1
 	}
+
 	message := []interface{}{
 		time.Now().UTC().Format("2006-01-02 15:04:05Z"),
 		req.PlacementId,
 		carrier,
-		NanIfEmpty(req.countryCode),
+		NanIfEmpty(req.Location.CountryCode),
 		NanIfEmpty(req.OsVersion),
 		NanIfEmpty(req.ClientVersion),
 		NanIfEmpty(req.Network),

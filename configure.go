@@ -42,6 +42,10 @@ type Configure struct {
 	ProfilerInterval int  `default:"10"`
 
 	TrafficRandom int `default:"80"`
+
+	ModelDataSaveDir string `default:"./"`
+
+	RankTablePath string `default:"adrank.json"`
 }
 
 func NewConfigure() *Configure {
@@ -82,6 +86,21 @@ func (c *Configure) LoadFromFile(file string) error {
 		return err
 	}
 	if err := json.Unmarshal(content, &c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Configure) SaveToFile(file string) error {
+	configFile, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	content, err := json.MarshalIndent(c, "", "    ")
+	if err != nil {
+		return err
+	}
+	if _, err := configFile.Write(content); err != nil {
 		return err
 	}
 	return nil

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +27,9 @@ type RtbLite struct {
 	producer     *KafkaWrapper
 	configure    *Configure
 	profiler     *Profiler
-	r            *rand.Rand
+	saveFile     *rotatelogger.Rotator
+
+	r *rand.Rand
 }
 
 func NewRtbLite(configure *Configure) (*RtbLite, error) {
@@ -38,14 +42,24 @@ func NewRtbLite(configure *Configure) (*RtbLite, error) {
 	if err != nil {
 		return nil, err
 	}
+	var saveFile *rotatelogger.Rotator = nil
+	if configure.ModelDataSaveDir != "" {
+		saveFile = &rotatelogger.Rotator{}
+		saveFile.Create(path.Join(configure.ModelDataSaveDir, "model.save"), rotatelogger.DailyRotation)
+	}
+	cache, err := NewInventoryCache(configure, logger)
+	if err != nil {
+		return nil, err
+	}
 	return &RtbLite{
 		geoDb:        geoDb,
-		cache:        NewInventoryCache(configure, logger),
+		cache:        cache,
 		logger:       logger,
 		redisWrapper: NewRedisWrapper(configure, logger),
 		producer:     producer,
 		configure:    configure,
 		profiler:     NewProfiler(configure, logger),
+		saveFile:     saveFile,
 		r:            rand.New(rand.NewSource(time.Now().Unix())),
 	}, nil
 }
@@ -69,24 +83,24 @@ func (rl *RtbLite) CacheUpdateLoop() error {
 }
 
 type ParsedRequest struct {
-	Limit         int          `json:"limit"`
-	PlacementId   string       `json:"placement_id"`
-	L             string       `json:"l"`
-	M             string       `json:"m"`
-	Ip            string       `json:"ip"`
-	Cid           string       `json:"cid"`
-	OsVersion     string       `json:"os_version"`
-	ClientVersion string       `json:"client_version"`
-	Network       string       `json:"network"`
-	Cc            string       `json:"cc"`
-	Hp            string       `json:"hp"`
-	P             string       `json:"p"`
-	C             string       `json:"c"`
-	Adgroup       string       `json:"adgroup_id"`
-	Creatives     []*Inventory `json:"creatives"`
-	Id            string       `json:"id"`
+	Limit         int                  `json:"limit"`
+	PlacementId   string               `json:"placement_id"`
+	L             string               `json:"l"`
+	M             string               `json:"m"`
+	Ip            string               `json:"ip"`
+	Cid           string               `json:"cid"`
+	OsVersion     string               `json:"os_version"`
+	ClientVersion string               `json:"client_version"`
+	Network       string               `json:"network"`
+	Cc            string               `json:"cc"`
+	Hp            string               `json:"hp"`
+	P             string               `json:"p"`
+	C             string               `json:"c"`
+	Adgroup       string               `json:"adgroup_id"`
+	Creatives     []*InventoryForRedis `json:"creatives"`
+	Id            string               `json:"id"`
 
-	countryCode  string
+	Location     *libgeo.Location `json:"location"`
 	OsVersionNum int
 }
 
@@ -112,61 +126,62 @@ func (rl *RtbLite) Parse(req *http.Request) *ParsedRequest {
 	r.C = req.URL.Query().Get("c")
 
 	r.Id = uuid.NewV4().Hex()
-	r.countryCode = rl.geoDb.GetLocationByIP(r.Ip).CountryCode
+	r.Location = rl.geoDb.GetLocationByIP(r.Ip)
+	if r.Location == nil {
+		r.Location = &libgeo.Location{}
+	}
 	return r
 }
 
-func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives InventoryCollection, count int) []*Inventory {
+func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryCollection, count int) []*Inventory {
 	req.Adgroup = "4"
 	selectedCreatives := make([]*Inventory, 0)
 	lastPackageName := ""
-	for _, record := range creatives {
-		if req.OsVersionNum < record.minOsNum || req.OsVersionNum > record.maxOsNum {
+	for _, record := range creatives.Data {
+		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
 			continue
 		}
-		if lastPackageName != record.packageName {
+		if lastPackageName != record.PackageName {
 			selectedCreatives = append(selectedCreatives, record)
 			if len(selectedCreatives) >= count {
 				break
 			}
-			lastPackageName = record.packageName
+			lastPackageName = record.PackageName
 		}
 	}
 	return selectedCreatives
 }
 
-func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives InventoryCollection, count int) []*Inventory {
+func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives *InventoryCollection, count int) []*Inventory {
 	req.Adgroup = "1"
 	r := rand.New(rand.NewSource(time.Now().Unix()))
-	randomSelect := r.Perm(len(creatives))
-	uniqueCreatives := make(map[string]*Inventory, count)
+	randomSelect := r.Perm(creatives.Len())
+	uniqueCreatives := make(map[string]*Inventory)
 	for _, index := range randomSelect {
-		record := creatives[index]
-		if req.OsVersionNum < record.minOsNum || req.OsVersionNum > record.maxOsNum {
+		record := creatives.Data[index]
+		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
 			continue
 		}
-		if _, ok := uniqueCreatives[record.packageName]; !ok {
-			uniqueCreatives[record.packageName] = record
+		if _, ok := uniqueCreatives[record.PackageName]; !ok {
+			uniqueCreatives[record.PackageName] = record
 			if len(uniqueCreatives) >= count {
 				break
 			}
 		}
 	}
-	selectedCreatives := make([]*Inventory, count)
-	index := 0
+	selectedCreatives := make([]*Inventory, 0)
 	for _, record := range uniqueCreatives {
-		selectedCreatives[index] = record
-		index += 1
+		selectedCreatives = append(selectedCreatives, record)
 	}
 	return selectedCreatives
 }
 
-func (rl *RtbLite) Augment(req *ParsedRequest, creatives InventoryCollection) {
+func (rl *RtbLite) Augment(req *ParsedRequest, creatives *InventoryCollection) {
 	if frequencies, err := rl.redisWrapper.GetFrequency(req, creatives); err != nil {
 		rl.logger.Warning("redis error: %v", err.Error())
 		return
 	} else {
-		for index, value := range creatives {
+		for index, value := range creatives.Data {
 			value.Frequency = frequencies[index]
 		}
 	}
@@ -177,7 +192,7 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 	defer rl.profiler.OnRequest(time.Now().Sub(start).Seconds())
 
 	parsed := rl.Parse(req)
-	filteredByCountry, ok := rl.cache.cacheByCountry[parsed.countryCode]
+	filteredByCountry, ok := rl.cache.cacheByCountry[parsed.Location.CountryCode]
 	if !ok {
 		io.WriteString(rw, "")
 		return
@@ -195,17 +210,19 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 	for index, record := range creativesToReturn {
 		creativeId := fmt.Sprintf("%v-%v", parsed.Id, index)
 		clickTracker := "http://" + rl.configure.ClickAddress + "/click?final_url=" +
-			url.QueryEscape(record.clickUrl+"&"+GetParam(index, parsed, record)) + "&param=" + creativeId
+			url.QueryEscape(record.ClickUrl+"&"+GetParam(index, parsed, record)) + "&param=" + creativeId
 		impressionTracker := "http://" + rl.configure.CallbackAddress + "/impression?param=" + creativeId
 		ret = append(ret, fmt.Sprintf(`{ "bundle_id": "%v",  "click_url": "%v", "creative_url": "%v", "icon_url": "%v", "impression_url": "%v", "title": "%v" }`,
-			record.packageName, clickTracker, record.bannerUrl, record.iconUrl, impressionTracker, record.label))
+			record.PackageName, clickTracker, record.BannerUrl, record.IconUrl, impressionTracker, record.Label))
 	}
 	response := `{"ad": [` + strings.Join(ret, ",") + `], "error_code": 0, "error_message": "success"}`
 	io.WriteString(rw, response)
 
-	rl.redisWrapper.SaveRequest(parsed, creativesToReturn, rl.configure.RedisRequestTimeout)
-	rl.producer.Log(rl.configure.KafkaRequestTopic, GetReqeustKafkaMessage(parsed))
-
+	// 提前把结果发出去，后续操作可以慢慢做
+	go func() {
+		rl.redisWrapper.SaveRequest(parsed, creativesToReturn, rl.configure.RedisRequestTimeout)
+		rl.producer.Log(rl.configure.KafkaRequestTopic, GetReqeustKafkaMessage(parsed))
+	}()
 }
 
 func (rl *RtbLite) Impression(rw http.ResponseWriter, req *http.Request) {
@@ -217,21 +234,35 @@ func (rl *RtbLite) Impression(rw http.ResponseWriter, req *http.Request) {
 		rl.logger.Error("fail to get id from param: %v", err.Error())
 		return
 	}
-	parsed, err := rl.redisWrapper.GetRequest(id)
-	if err != nil {
-		rl.logger.Error(err.Error())
-	} else {
-		rl.logger.Debug("%v", *parsed)
-		rl.redisWrapper.IncrFrequency(parsed, parsed.Creatives[index].AdId)
-		record := &Inventory{}
-		if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
+	response := `{"error_code": 0, "error_message": "success"}`
+	io.WriteString(rw, response)
+	// 提前把结果发出去，后续操作可以慢慢做
+	go func() {
+		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
+		parsed, err := rl.redisWrapper.GetRequest(id)
+		if err != nil {
 			rl.logger.Error(err.Error())
-			return
+		} else {
+			rl.redisWrapper.IncrFrequency(parsed, parsed.Creatives[index].AdId)
+			record := &Inventory{}
+			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
+				rl.logger.Error(err.Error())
+				return
+			}
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisImpressionTimeout)
+			rl.producer.Log(rl.configure.KafkaImressionTopic, GetEventKafkaMessage(parsed, "impression", record))
+
+			if rl.saveFile != nil {
+				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
+					rl.logger.Warning(err.Error())
+				} else {
+					if _, err := rl.saveFile.WriteString(fmt.Sprintln(string(data))); err != nil {
+						rl.logger.Warning(err.Error())
+					}
+				}
+			}
 		}
-		rl.logger.Debug("%v", *parsed)
-		rl.redisWrapper.SetExpire(param, rl.configure.RedisImpressionTimeout)
-		rl.producer.Log(rl.configure.KafkaImressionTopic, GetEventKafkaMessage(parsed, "impression", record))
-	}
+	}()
 }
 
 func (rl *RtbLite) Click(rw http.ResponseWriter, req *http.Request) {
@@ -242,19 +273,38 @@ func (rl *RtbLite) Click(rw http.ResponseWriter, req *http.Request) {
 		rl.logger.Error("fail to get id from param: %v", err.Error())
 		return
 	}
-	parsed, err := rl.redisWrapper.GetRequest(id)
-	if err != nil {
-		rl.logger.Error(err.Error())
+
+	finalUrl := req.URL.Query().Get("final_url")
+	if len(finalUrl) > 0 {
+		http.Redirect(rw, req, finalUrl, 302)
 	} else {
-		record := &Inventory{}
-		if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
-			rl.logger.Error(err.Error())
-			return
-		}
-		rl.logger.Debug("%v", *parsed)
-		rl.redisWrapper.SetExpire(param, rl.configure.RedisClickTimeout)
-		rl.producer.Log(rl.configure.KafkaClickTopic, GetEventKafkaMessage(parsed, "click", record))
+		response := `{"error_code": 0, "error_message": "success"}`
+		io.WriteString(rw, response)
 	}
+
+	// 提前把结果发出去，后续操作可以慢慢做
+	go func() {
+		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
+		parsed, err := rl.redisWrapper.GetRequest(id)
+		if err != nil {
+			rl.logger.Error(err.Error())
+		} else {
+			record := &Inventory{}
+			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
+				rl.logger.Error(err.Error())
+				return
+			}
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisClickTimeout)
+			rl.producer.Log(rl.configure.KafkaClickTopic, GetEventKafkaMessage(parsed, "click", record))
+			if rl.saveFile != nil {
+				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
+					if _, err := rl.saveFile.WriteString(fmt.Sprintln(string(data))); err != nil {
+						rl.logger.Warning(err.Error())
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (rl *RtbLite) Conversion(rw http.ResponseWriter, req *http.Request) {
@@ -264,17 +314,45 @@ func (rl *RtbLite) Conversion(rw http.ResponseWriter, req *http.Request) {
 		rl.logger.Error("fail to get id from param: %v", err.Error())
 		return
 	}
-	parsed, err := rl.redisWrapper.GetRequest(id)
-	if err != nil {
-		rl.logger.Error(err.Error())
-	} else {
-		record := &Inventory{}
-		if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
+
+	response := `{"error_code": 0, "error_message": "success"}`
+	io.WriteString(rw, response)
+
+	// 提前把结果发出去，后续操作可以慢慢做
+	go func() {
+		time.Sleep(1 * time.Second) // 为了防止redis时序颠倒取不到id
+		parsed, err := rl.redisWrapper.GetRequest(id)
+		if err != nil {
 			rl.logger.Error(err.Error())
-			return
+		} else {
+			record := &Inventory{}
+			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
+				rl.logger.Error(err.Error())
+				return
+			}
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisConversionTimeout)
+			rl.producer.Log(rl.configure.KafkaConversionTopic, GetEventKafkaMessage(parsed, "td_postback", record))
+			if rl.saveFile != nil {
+				if data, err := GetModelDataLog(parsed, record, "impression"); err != nil {
+					if _, err := rl.saveFile.WriteString(fmt.Sprintln(string(data))); err != nil {
+						rl.logger.Warning(err.Error())
+					}
+				}
+			}
 		}
-		rl.logger.Debug("%v", *parsed)
-		rl.redisWrapper.SetExpire(param, rl.configure.RedisConversionTimeout)
-		rl.producer.Log(rl.configure.KafkaConversionTopic, GetEventKafkaMessage(parsed, "td_postback", record))
+	}()
+}
+
+func (rl *RtbLite) UpdateRank(rw http.ResponseWriter, req *http.Request) {
+	if err := rl.cache.UpdateRankTable(); err != nil {
+		io.WriteString(rw, fmt.Sprintf("failed, %v", err.Error()))
+	} else {
+		io.WriteString(rw, fmt.Sprintf("success, %v item(s) loaded\n", rl.cache.rankTable.Len()))
 	}
+}
+
+func (rl *RtbLite) GetRank(rw http.ResponseWriter, req *http.Request) {
+	rt := rl.cache.GetRankTable()
+	encoder := json.NewEncoder(rw)
+	encoder.Encode(rt.rank)
 }
