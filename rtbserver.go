@@ -141,6 +141,9 @@ func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryColle
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
 			continue
 		}
+		if record.Frequency > rl.configure.RedisFrequencyPerId {
+			continue
+		}
 		if lastPackageName != record.PackageName {
 			selectedCreatives = append(selectedCreatives, record)
 			if len(selectedCreatives) >= count {
@@ -160,6 +163,9 @@ func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives *InventoryCollec
 	for _, index := range randomSelect {
 		record := creatives.Data[index]
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
+			continue
+		}
+		if record.Frequency > rl.configure.RedisFrequencyPerId {
 			continue
 		}
 		if _, ok := uniqueCreatives[record.PackageName]; !ok {
@@ -243,12 +249,12 @@ func (rl *RtbLite) Impression(rw http.ResponseWriter, req *http.Request) {
 		if err != nil {
 			rl.logger.Error(err.Error())
 		} else {
-			rl.redisWrapper.IncrFrequency(parsed, parsed.Creatives[index].AdId)
 			record := &Inventory{}
 			if err := rl.cache.FetchOne(parsed.Creatives[index].AdId, record); err != nil {
 				rl.logger.Error(err.Error())
 				return
 			}
+			rl.redisWrapper.IncrFrequency(parsed, record.ModelSign1)
 			rl.redisWrapper.SetExpire(param, rl.configure.RedisImpressionTimeout)
 			rl.producer.Log(rl.configure.KafkaImressionTopic, GetEventKafkaMessage(parsed, "impression", record))
 

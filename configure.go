@@ -30,6 +30,7 @@ type Configure struct {
 	RedisAddress           string `default:"localhost:6379"`
 	RedisCachePrefix       string `default:"param:"`
 	RedisFrequencyPrefix   string `default:"fr:"`
+	RedisFrequencyPerId    int    `default:"5"`
 	RedisRequestTimeout    int    `default:"43200"`
 	RedisImpressionTimeout int    `default:"86400"`
 	RedisClickTimeout      int    `default:"259200"`
