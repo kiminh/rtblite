@@ -27,14 +27,16 @@ type Configure struct {
 	KafkaClickTopic      string `default:"click"`
 	KafkaConversionTopic string `default:"td_postback"`
 
-	RedisAddress           string `default:"localhost:6379"`
-	RedisCachePrefix       string `default:"param:"`
-	RedisFrequencyPrefix   string `default:"fr:"`
-	RedisFrequencyPerId    int    `default:"5"`
-	RedisRequestTimeout    int    `default:"43200"`
-	RedisImpressionTimeout int    `default:"86400"`
-	RedisClickTimeout      int    `default:"259200"`
-	RedisConversionTimeout int    `default:"43200"`
+	RedisFrequencyAddress string `default:"localhost:6379"`
+	RedisFrequencyPrefix  string `default:"fr:"`
+	RedisFrequencyPerId   int    `default:"5"`
+
+	RedisJoinAddress           string `default:"localhost:6379"`
+	RedisJoinPrefix            string `default:"param:"`
+	RedisJoinRequestTimeout    int    `default:"43200"`
+	RedisJoinImpressionTimeout int    `default:"86400"`
+	RedisJoinClickTimeout      int    `default:"259200"`
+	RedisJoinConversionTimeout int    `default:"43200"`
 
 	LogLevel string `default:"debug"`
 	LogDir   string `default:""`
@@ -42,7 +44,8 @@ type Configure struct {
 	ProfilerEnable   bool `default:"true"`
 	ProfilerInterval int  `default:"10"`
 
-	TrafficRandom int `default:"80"`
+	TrafficRandom        int  `default:"80"`
+	FillRankedWithRandom bool `default:"true"`
 
 	ModelDataSaveDir string `default:"./"`
 

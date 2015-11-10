@@ -58,6 +58,7 @@ type InventoryCollection struct {
 	Data          []*Inventory
 	PriorityTable *RankTable
 	r             *rand.Rand
+	RankItemCount int
 }
 
 func NewInventoryCollection(rankTable *RankTable) *InventoryCollection {
@@ -71,18 +72,16 @@ func NewInventoryCollection(rankTable *RankTable) *InventoryCollection {
 func (iq *InventoryCollection) Append(inv *Inventory) {
 	iq.Data = append(iq.Data, inv)
 }
-
 func (iq InventoryCollection) Len() int { return len(iq.Data) }
 func (iq InventoryCollection) Less(i, j int) bool {
-	iIndex, iOk := iq.PriorityTable.rank[iq.Data[i].PackageName]
+	iIndex, iOk := iq.PriorityTable.rank[Rank{iq.Data[i].PackageName, iq.Data[i].AdType}]
 	if !iOk {
-		iIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()
+		iIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()*100
 	}
-	jIndex, jOk := iq.PriorityTable.rank[iq.Data[j].PackageName]
+	jIndex, jOk := iq.PriorityTable.rank[Rank{iq.Data[j].PackageName, iq.Data[j].AdType}]
 	if !jOk {
-		jIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()
+		jIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()*100
 	}
-
 	if iIndex == jIndex {
 		return iq.Data[i].Price > iq.Data[j].Price
 	}
@@ -217,6 +216,9 @@ func (inv *InventoryCache) Load() error {
 			countryMap[record.Country] = NewInventoryCollection(inv.rankTable)
 		}
 		countryMap[record.Country].Append(&record)
+		if _, ok := inv.rankTable.rank[Rank{record.PackageName, record.AdType}]; ok {
+			countryMap[record.Country].RankItemCount += 1
+		}
 		countLoaded += 1
 	}
 	recordTimeSpent := meter.TimeElapsed() - sqlTimeSpent

@@ -13,19 +13,35 @@ import (
 )
 
 type RedisWrapper struct {
-	redisPool *redis.Pool
-	configure *Configure
-	logger    *logging.Logger
+	redisPoolForFrequency *redis.Pool
+	redisPoolForJoin      *redis.Pool
+	configure             *Configure
+	logger                *logging.Logger
 }
 
 func NewRedisWrapper(configure *Configure, logger *logging.Logger) *RedisWrapper {
 	return &RedisWrapper{
 		configure: configure,
-		redisPool: &redis.Pool{
+		redisPoolForFrequency: &redis.Pool{
 			MaxIdle:     64,
 			IdleTimeout: 60 * time.Second,
 			Dial: func() (redis.Conn, error) {
-				c, err := redis.Dial("tcp", configure.RedisAddress)
+				c, err := redis.Dial("tcp", configure.RedisFrequencyAddress)
+				if err != nil {
+					return nil, err
+				}
+				return c, err
+			},
+			TestOnBorrow: func(c redis.Conn, t time.Time) error {
+				_, err := c.Do("PING")
+				return err
+			},
+		},
+		redisPoolForJoin: &redis.Pool{
+			MaxIdle:     64,
+			IdleTimeout: 60 * time.Second,
+			Dial: func() (redis.Conn, error) {
+				c, err := redis.Dial("tcp", configure.RedisJoinAddress)
 				if err != nil {
 					return nil, err
 				}
@@ -41,7 +57,7 @@ func NewRedisWrapper(configure *Configure, logger *logging.Logger) *RedisWrapper
 }
 
 func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives *InventoryCollection) (response []int, err error) {
-	conn := rw.redisPool.Get()
+	conn := rw.redisPoolForFrequency.Get()
 	defer conn.Close()
 	frIds := make([]interface{}, creatives.Len())
 	for index, value := range creatives.Data {
@@ -55,7 +71,7 @@ func (rw *RedisWrapper) GetFrequency(req *ParsedRequest, creatives *InventoryCol
 }
 
 func (rw *RedisWrapper) IncrFrequency(req *ParsedRequest, modelSign1 int) (err error) {
-	conn := rw.redisPool.Get()
+	conn := rw.redisPoolForFrequency.Get()
 	defer conn.Close()
 
 	frId := fmt.Sprintf("%v%v_%v",
@@ -63,11 +79,14 @@ func (rw *RedisWrapper) IncrFrequency(req *ParsedRequest, modelSign1 int) (err e
 	if _, err = conn.Do("incr", frId); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())
 	}
+	if _, err = conn.Do("incr", frId); err != nil {
+		rw.logger.Warning("redis error: %v", err.Error())
+	}
 	return
 }
 
 func (rw *RedisWrapper) SaveRequest(req *ParsedRequest, creatives []*Inventory, timeout int) error {
-	conn := rw.redisPool.Get()
+	conn := rw.redisPoolForJoin.Get()
 	defer conn.Close()
 	creativesForRedis := make([]*InventoryForRedis, len(creatives))
 	for index, value := range creatives {
@@ -90,7 +109,7 @@ func (rw *RedisWrapper) SaveRequest(req *ParsedRequest, creatives []*Inventory, 
 		return err
 	}
 	zlibWriter.Close()
-	if _, err := conn.Do("setex", rw.configure.RedisCachePrefix+req.Id, timeout, buf.Bytes()); err != nil {
+	if _, err := conn.Do("setex", rw.configure.RedisJoinPrefix+req.Id, timeout, buf.Bytes()); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())
 		return err
 	}
@@ -98,9 +117,9 @@ func (rw *RedisWrapper) SaveRequest(req *ParsedRequest, creatives []*Inventory, 
 }
 
 func (rw *RedisWrapper) GetRequest(id string) (*ParsedRequest, error) {
-	conn := rw.redisPool.Get()
+	conn := rw.redisPoolForJoin.Get()
 	defer conn.Close()
-	if response, err := redis.Bytes(conn.Do("get", rw.configure.RedisCachePrefix+id)); err != nil {
+	if response, err := redis.Bytes(conn.Do("get", rw.configure.RedisJoinPrefix+id)); err != nil {
 		if err == redis.ErrNil {
 			// 查不到数据算正常
 		} else {
@@ -123,7 +142,7 @@ func (rw *RedisWrapper) GetRequest(id string) (*ParsedRequest, error) {
 }
 
 func (rw *RedisWrapper) SetExpire(requestId string, expiredTime int) (err error) {
-	conn := rw.redisPool.Get()
+	conn := rw.redisPoolForJoin.Get()
 	defer conn.Close()
 	if _, err = conn.Do("expire", "param:"+requestId, expiredTime); err != nil {
 		rw.logger.Warning("redis error: %v", err.Error())

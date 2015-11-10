@@ -146,21 +146,21 @@ func (rl *RtbLite) Parse(req *http.Request) *ParsedRequest {
 
 func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryCollection, count int) []*Inventory {
 	req.Adgroup = "4"
+	uniqueCreatives := make(map[string]*Inventory)
 	selectedCreatives := make([]*Inventory, 0)
-	lastPackageName := ""
-	for _, record := range creatives.Data {
+	for index, record := range creatives.Data {
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
 			continue
 		}
 		if record.Frequency > rl.configure.RedisFrequencyPerId {
 			continue
 		}
-		if lastPackageName != record.PackageName {
+		if _, ok := uniqueCreatives[record.PackageName]; !ok {
+			uniqueCreatives[record.PackageName] = record
 			selectedCreatives = append(selectedCreatives, record)
-			if len(selectedCreatives) >= count {
+			if len(uniqueCreatives) >= count || (!rl.configure.FillRankedWithRandom && index >= creatives.RankItemCount-1) {
 				break
 			}
-			lastPackageName = record.PackageName
 		}
 	}
 	return selectedCreatives
@@ -171,6 +171,7 @@ func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives *InventoryCollec
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	randomSelect := r.Perm(creatives.Len())
 	uniqueCreatives := make(map[string]*Inventory)
+	selectedCreatives := make([]*Inventory, 0)
 	for _, index := range randomSelect {
 		record := creatives.Data[index]
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
@@ -181,14 +182,11 @@ func (rl *RtbLite) SelectByRandom(req *ParsedRequest, creatives *InventoryCollec
 		}
 		if _, ok := uniqueCreatives[record.PackageName]; !ok {
 			uniqueCreatives[record.PackageName] = record
+			selectedCreatives = append(selectedCreatives, record)
 			if len(uniqueCreatives) >= count {
 				break
 			}
 		}
-	}
-	selectedCreatives := make([]*Inventory, 0)
-	for _, record := range uniqueCreatives {
-		selectedCreatives = append(selectedCreatives, record)
 	}
 	return selectedCreatives
 }
@@ -239,7 +237,7 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 
 	// 提前把结果发出去，后续操作可以慢慢做
 	go func() {
-		rl.redisWrapper.SaveRequest(parsed, creativesToReturn, rl.configure.RedisRequestTimeout)
+		rl.redisWrapper.SaveRequest(parsed, creativesToReturn, rl.configure.RedisJoinRequestTimeout)
 		rl.producer.Log(rl.configure.KafkaRequestTopic, GetReqeustKafkaMessage(parsed))
 	}()
 }
@@ -275,7 +273,7 @@ func (rl *RtbLite) Impression(rw http.ResponseWriter, req *http.Request) {
 				return
 			}
 			rl.redisWrapper.IncrFrequency(parsed, record.ModelSign1)
-			rl.redisWrapper.SetExpire(param, rl.configure.RedisImpressionTimeout)
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisJoinImpressionTimeout)
 			rl.producer.Log(rl.configure.KafkaImressionTopic, GetEventKafkaMessage(parsed, "impression", record))
 
 			// model
@@ -321,7 +319,7 @@ func (rl *RtbLite) Click(rw http.ResponseWriter, req *http.Request) {
 				rl.logger.Error("fetch from db failed [err: %s][param: %s]", err.Error(), param)
 				return
 			}
-			rl.redisWrapper.SetExpire(param, rl.configure.RedisClickTimeout)
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisJoinClickTimeout)
 			rl.producer.Log(rl.configure.KafkaClickTopic, GetEventKafkaMessage(parsed, "click", record))
 
 			// model
@@ -361,7 +359,7 @@ func (rl *RtbLite) Conversion(rw http.ResponseWriter, req *http.Request) {
 				rl.logger.Error("fetch from db failed [err: %s][param: %s]", err.Error(), param)
 				return
 			}
-			rl.redisWrapper.SetExpire(param, rl.configure.RedisConversionTimeout)
+			rl.redisWrapper.SetExpire(param, rl.configure.RedisJoinConversionTimeout)
 			rl.producer.Log(rl.configure.KafkaConversionTopic, GetEventKafkaMessage(parsed, "td_postback", record))
 
 			// model
@@ -388,6 +386,14 @@ func (rl *RtbLite) UpdateRank(rw http.ResponseWriter, req *http.Request) {
 
 func (rl *RtbLite) GetRank(rw http.ResponseWriter, req *http.Request) {
 	rt := rl.cache.GetRankTable()
-	encoder := json.NewEncoder(rw)
-	encoder.Encode(rt.rank)
+	toPrint := make([][]string, rt.Len())
+	for key, value := range rt.rank {
+		toPrint[value] = []string{key.PackageName, key.AdType}
+	}
+	if content, err := json.MarshalIndent(toPrint, "", "    "); err != nil {
+		io.WriteString(rw, err.Error())
+		return
+	} else {
+		rw.Write(content)
+	}
 }
