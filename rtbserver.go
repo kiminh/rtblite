@@ -148,7 +148,11 @@ func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryColle
 	req.Adgroup = "4"
 	uniqueCreatives := make(map[string]*Inventory)
 	selectedCreatives := make([]*Inventory, 0)
+	rankLimit := creatives.RankItemCount
 	for index, record := range creatives.Data {
+		if len(uniqueCreatives) >= count || (!rl.configure.FillRankedWithRandom && index >= rankLimit) {
+			break
+		}
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
 			continue
 		}
@@ -158,9 +162,9 @@ func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryColle
 		if _, ok := uniqueCreatives[record.PackageName]; !ok {
 			uniqueCreatives[record.PackageName] = record
 			selectedCreatives = append(selectedCreatives, record)
-			if len(uniqueCreatives) >= count || (!rl.configure.FillRankedWithRandom && index >= creatives.RankItemCount-1) {
-				break
-			}
+		} else {
+			// 一旦重复，比如3条记录 A A B，那么一旦发现A重复，那么实际上只能选出2条
+			rankLimit -= 1
 		}
 	}
 	return selectedCreatives
@@ -207,13 +211,23 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 	defer rl.profiler.OnRequest(time.Now().Sub(start).Seconds())
 
 	parsed := rl.Parse(req)
-	filteredByCountry, ok := rl.cache.cacheByCountry[parsed.IpLib.CountryCode]
-	if !ok {
-		io.WriteString(rw, "")
-		return
+	var filteredByCountry *InventoryCollection
+	if cache, ok := rl.cache.cacheByAdunitAndCountry[parsed.PlacementId]; ok {
+		if creatives, ok := cache[parsed.IpLib.CountryCode]; ok {
+			filteredByCountry = creatives
+		} else {
+			io.WriteString(rw, "")
+			return
+		}
+	} else {
+		if creatives, ok := rl.cache.cacheByCountry[parsed.IpLib.CountryCode]; ok {
+			filteredByCountry = creatives
+		} else {
+			io.WriteString(rw, "")
+			return
+		}
 	}
 	rl.Augment(parsed, filteredByCountry)
-
 	chooseCreative := rl.r.Intn(100)
 	var creativesToReturn []*Inventory
 	if chooseCreative < rl.configure.TrafficRandom {
@@ -380,14 +394,17 @@ func (rl *RtbLite) UpdateRank(rw http.ResponseWriter, req *http.Request) {
 	if err := rl.cache.UpdateRankTable(); err != nil {
 		io.WriteString(rw, fmt.Sprintf("failed, %v", err.Error()))
 	} else {
-		io.WriteString(rw, fmt.Sprintf("success, %v item(s) loaded\n", rl.cache.rankTable.Len()))
+		io.WriteString(rw, fmt.Sprintf("updating done, %v item(s) loaded for default", len(rl.cache.rankTable.rankDefault)))
+		for adunit, rankTable := range rl.cache.rankTable.rankByAdunit {
+			io.WriteString(rw, fmt.Sprintf("		%v item(s) loaded for adunit %v", len(rankTable), adunit))
+		}
 	}
 }
 
 func (rl *RtbLite) GetRank(rw http.ResponseWriter, req *http.Request) {
 	rt := rl.cache.GetRankTable()
-	toPrint := make([][]string, rt.Len())
-	for key, value := range rt.rank {
+	toPrint := make([][]string, len(rt.rankDefault))
+	for key, value := range rt.rankDefault {
 		toPrint[value] = []string{key.PackageName, key.AdType}
 	}
 	if content, err := json.MarshalIndent(toPrint, "", "    "); err != nil {

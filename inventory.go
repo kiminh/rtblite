@@ -56,15 +56,15 @@ type InventoryForRedis struct {
 
 type InventoryCollection struct {
 	Data          []*Inventory
-	PriorityTable *RankTable
+	PriorityTable map[Rank]int
 	r             *rand.Rand
 	RankItemCount int
 }
 
-func NewInventoryCollection(rankTable *RankTable) *InventoryCollection {
+func NewInventoryCollection(priorityTable map[Rank]int) *InventoryCollection {
 	return &InventoryCollection{
 		Data:          make([]*Inventory, 0),
-		PriorityTable: rankTable,
+		PriorityTable: priorityTable,
 		r:             rand.New(rand.NewSource(time.Now().Unix())),
 	}
 }
@@ -74,13 +74,13 @@ func (iq *InventoryCollection) Append(inv *Inventory) {
 }
 func (iq InventoryCollection) Len() int { return len(iq.Data) }
 func (iq InventoryCollection) Less(i, j int) bool {
-	iIndex, iOk := iq.PriorityTable.rank[Rank{iq.Data[i].PackageName, iq.Data[i].AdType}]
+	iIndex, iOk := iq.PriorityTable[Rank{iq.Data[i].PackageName, iq.Data[i].AdType}]
 	if !iOk {
-		iIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()*100
+		iIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
 	}
-	jIndex, jOk := iq.PriorityTable.rank[Rank{iq.Data[j].PackageName, iq.Data[j].AdType}]
+	jIndex, jOk := iq.PriorityTable[Rank{iq.Data[j].PackageName, iq.Data[j].AdType}]
 	if !jOk {
-		jIndex = iq.r.Intn(1000) + iq.PriorityTable.Len()*100
+		jIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
 	}
 	if iIndex == jIndex {
 		return iq.Data[i].Price > iq.Data[j].Price
@@ -91,17 +91,18 @@ func (iq InventoryCollection) Less(i, j int) bool {
 func (iq InventoryCollection) Swap(i, j int) { iq.Data[i], iq.Data[j] = iq.Data[j], iq.Data[i] }
 
 type InventoryCache struct {
-	databaseHandler *sql.DB
-	configure       *Configure
-	cacheByCountry  map[string]*InventoryCollection
-	rankTable       *RankTable
+	databaseHandler         *sql.DB
+	configure               *Configure
+	cacheByCountry          map[string]*InventoryCollection
+	cacheByAdunitAndCountry map[string]map[string]*InventoryCollection
+	rankTable               *RankTable
 
 	lock   sync.Mutex
 	logger *logging.Logger
 }
 
 func NewInventoryCache(configure *Configure, logger *logging.Logger) (*InventoryCache, error) {
-	rankTable, err := NewRankTable(configure.RankTablePath)
+	rankTable, err := NewRankTable(configure)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +124,10 @@ func (inv *InventoryCache) UpdateRankTable() error {
 	if err != nil {
 		inv.logger.Notice("updating interrupted, %v", err.Error())
 	} else {
-		inv.logger.Notice("updating done, %v item(s) loaded", inv.rankTable.Len())
+		inv.logger.Notice("updating done, %v item(s) loaded for default", len(inv.rankTable.rankDefault))
+		for adunit, rankTable := range inv.rankTable.rankByAdunit {
+			inv.logger.Notice("		%v item(s) loaded for adunit %v", len(rankTable), adunit)
+		}
 	}
 	return err
 }
@@ -198,6 +202,10 @@ func (inv *InventoryCache) Load() error {
 	}
 	sqlTimeSpent := meter.TimeElapsed()
 	countryMap := make(map[string]*InventoryCollection)
+	adunitAndCountryMap := make(map[string]map[string]*InventoryCollection)
+	for adunit, _ := range inv.rankTable.rankByAdunit {
+		adunitAndCountryMap[adunit] = make(map[string]*InventoryCollection)
+	}
 	countLoaded := 0
 	errorCount := 0
 	for rows.Next() {
@@ -213,11 +221,22 @@ func (inv *InventoryCache) Load() error {
 			continue
 		}
 		if _, ok := countryMap[record.Country]; !ok {
-			countryMap[record.Country] = NewInventoryCollection(inv.rankTable)
+			countryMap[record.Country] = NewInventoryCollection(inv.rankTable.rankDefault)
+			for adunit, rankTable := range inv.rankTable.rankByAdunit {
+				adunitAndCountryMap[adunit][record.Country] = NewInventoryCollection(rankTable)
+			}
 		}
 		countryMap[record.Country].Append(&record)
-		if _, ok := inv.rankTable.rank[Rank{record.PackageName, record.AdType}]; ok {
+		for adunit, _ := range inv.rankTable.rankByAdunit {
+			adunitAndCountryMap[adunit][record.Country].Append(&record)
+		}
+		if _, ok := inv.rankTable.rankDefault[Rank{record.PackageName, record.AdType}]; ok {
 			countryMap[record.Country].RankItemCount += 1
+		}
+		for adunit, rankTable := range inv.rankTable.rankByAdunit {
+			if _, ok := rankTable[Rank{record.PackageName, record.AdType}]; ok {
+				adunitAndCountryMap[adunit][record.Country].RankItemCount += 1
+			}
 		}
 		countLoaded += 1
 	}
@@ -225,6 +244,11 @@ func (inv *InventoryCache) Load() error {
 	inv.logger.Notice("%v record loaded, %v countries, %v errors", countLoaded, len(countryMap), errorCount)
 	for _, queue := range countryMap {
 		sort.Sort(queue)
+	}
+	for _, adunitMap := range adunitAndCountryMap {
+		for _, queue := range adunitMap {
+			sort.Sort(queue)
+		}
 	}
 	sortTimeSpent := meter.TimeElapsed() - recordTimeSpent
 	//	uniqueMap := make(map[string]InventoryCollection)
@@ -243,6 +267,11 @@ func (inv *InventoryCache) Load() error {
 	//	}
 	//	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
 	inv.cacheByCountry = countryMap
+	inv.cacheByAdunitAndCountry = adunitAndCountryMap
+
+	// fmt.Println(inv.cacheByCountry)
+	// fmt.Println(inv.cacheByAdunitAndCountry)
+
 	totallySpent := meter.TimeElapsed()
 	inv.logger.Notice("cache updated, totallySpent = %v,  sqlTimeSpent = %v, recordTimeSpent = %v, sortTimeSpent = %v",
 		totallySpent, sqlTimeSpent, recordTimeSpent, sortTimeSpent)

@@ -14,15 +14,17 @@ type Rank struct {
 }
 
 type RankTable struct {
-	updateTime time.Time
-	rank       map[Rank]int
-	rankFile   string
+	updateTime   time.Time
+	rankDefault  map[Rank]int
+	rankByAdunit map[string]map[Rank]int
+	configure    *Configure
 }
 
-func NewRankTable(rankFile string) (*RankTable, error) {
+func NewRankTable(configure *Configure) (*RankTable, error) {
 	t := &RankTable{
-		rankFile: rankFile,
-		rank:     make(map[Rank]int),
+		configure:    configure,
+		rankDefault:  make(map[Rank]int),
+		rankByAdunit: make(map[string]map[Rank]int),
 	}
 	if err := t.Load(); err != nil {
 		return nil, err
@@ -30,31 +32,68 @@ func NewRankTable(rankFile string) (*RankTable, error) {
 	return t, nil
 }
 
-func (rt *RankTable) Len() int { return len(rt.rank) }
-
 func (rt *RankTable) Load() error {
-	newTable := make(map[Rank]int)
-	file, err := os.Open(rt.rankFile)
+	rt.updateTime = time.Now()
+	// default
+	fileDefault, err := os.Open(rt.configure.RankTablePath)
 	if err != nil {
 		return err
 	}
-	content, err := ioutil.ReadAll(file)
+	defer fileDefault.Close()
+	rankContentDefault, err := ioutil.ReadAll(fileDefault)
 	if err != nil {
 		return err
 	}
-	rankList := make([][]string, 0)
-	err = json.Unmarshal(content, &rankList)
+	rankDefault := make([][]string, 0)
+	err = json.Unmarshal(rankContentDefault, &rankDefault)
 	if err != nil {
 		return err
 	}
-	for index, value := range rankList {
+	newRankTableDefault := make(map[Rank]int)
+	for index, value := range rankDefault {
 		if len(value) == 2 {
-			newTable[Rank{value[0], value[1]}] = index
+			newRankTableDefault[Rank{value[0], value[1]}] = index
 		} else {
 			fmt.Println(value, "is not a valid rank item")
 		}
 	}
-	rt.rank = newTable
-	rt.updateTime = time.Now()
-	return nil
+	rt.rankDefault = newRankTableDefault
+
+	fileByAdunit, err := os.Open(rt.configure.RankByAdunitTablePath)
+	if err != nil {
+		fmt.Println("fail to load RankByAdunit File:", err.Error, ", skip")
+		return nil
+	}
+	defer fileByAdunit.Close()
+	rankContentByAdunit, err := ioutil.ReadAll(fileByAdunit)
+	if err != nil {
+		return err
+	}
+	rankByAdunit := make(map[string][][]string, 0)
+	err = json.Unmarshal(rankContentByAdunit, &rankByAdunit)
+	if err != nil {
+		return err
+	}
+	newRankTableByAdunit := make(map[string]map[Rank]int)
+	for adunit, rank := range rankByAdunit {
+		newRankTableByAdunit[adunit] = make(map[Rank]int)
+		for index, value := range rank {
+			if len(value) == 2 {
+				newRankTableByAdunit[adunit][Rank{value[0], value[1]}] = index
+			} else {
+				fmt.Println(value, "is not a valid rank item")
+			}
+		}
+	}
+	rt.rankByAdunit = newRankTableByAdunit
+	return err
 }
+
+/*
+func main() {
+	c := NewConfigure()
+	c.LoadFromFile("rtblite.conf")
+	r, _ := NewRankTable(c)
+	r.Load()
+}
+*/

@@ -49,7 +49,8 @@ type Configure struct {
 
 	ModelDataSaveDir string `default:"./"`
 
-	RankTablePath string `default:"adrank.json"`
+	RankTablePath         string `default:"adrank.json"`
+	RankByAdunitTablePath string `default:"adrank_by_adunit.json"`
 }
 
 func NewConfigure() *Configure {

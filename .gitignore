@@ -2,3 +2,8 @@ rtblite
 *.sql
 *.un~
 *.conf
+*.json
+*.json.*
+
+log
+model
