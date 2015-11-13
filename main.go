@@ -67,6 +67,7 @@ func main() {
 		return
 	}
 	rtblite.RunProfiler()
+	rtblite.BlockListUpdateLoop()
 
 	listenOn := configure.HttpAddress
 

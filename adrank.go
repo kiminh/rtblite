@@ -11,6 +11,7 @@ import (
 type Rank struct {
 	PackageName string
 	AdType      string
+	Country     string
 }
 
 type RankTable struct {
@@ -52,7 +53,9 @@ func (rt *RankTable) Load() error {
 	newRankTableDefault := make(map[Rank]int)
 	for index, value := range rankDefault {
 		if len(value) == 2 {
-			newRankTableDefault[Rank{value[0], value[1]}] = index
+			newRankTableDefault[Rank{value[0], value[1], ""}] = index
+		} else if len(value) == 3 {
+			newRankTableDefault[Rank{value[0], value[1], value[2]}] = index
 		} else {
 			fmt.Println(value, "is not a valid rank item")
 		}
@@ -61,7 +64,7 @@ func (rt *RankTable) Load() error {
 
 	fileByAdunit, err := os.Open(rt.configure.RankByAdunitTablePath)
 	if err != nil {
-		fmt.Println("fail to load RankByAdunit File:", err.Error, ", skip")
+		fmt.Println("fail to load RankByAdunit File:", err.Error(), ", skip")
 		return nil
 	}
 	defer fileByAdunit.Close()
@@ -79,7 +82,9 @@ func (rt *RankTable) Load() error {
 		newRankTableByAdunit[adunit] = make(map[Rank]int)
 		for index, value := range rank {
 			if len(value) == 2 {
-				newRankTableByAdunit[adunit][Rank{value[0], value[1]}] = index
+				newRankTableByAdunit[adunit][Rank{value[0], value[1], ""}] = index
+			} else if len(value) == 3 {
+				newRankTableByAdunit[adunit][Rank{value[0], value[1], value[2]}] = index
 			} else {
 				fmt.Println(value, "is not a valid rank item")
 			}

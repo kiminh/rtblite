@@ -28,6 +28,7 @@ type RtbLite struct {
 	configure    *Configure
 	profiler     *Profiler
 	saveFile     *rotatelogger.Rotator
+	blockList    *BlockList
 
 	r *rand.Rand
 }
@@ -60,6 +61,7 @@ func NewRtbLite(configure *Configure) (*RtbLite, error) {
 		configure:    configure,
 		profiler:     NewProfiler(configure, logger),
 		saveFile:     saveFile,
+		blockList:    NewBlockList(configure, logger),
 		r:            rand.New(rand.NewSource(time.Now().Unix())),
 	}, nil
 }
@@ -77,6 +79,20 @@ func (rl *RtbLite) CacheUpdateLoop() error {
 		for range timer.C {
 			rl.cache.Load()
 			timer.Reset(time.Duration(rl.configure.MysqlUpdateInterval) * time.Second)
+		}
+	}()
+	return nil
+}
+
+func (rl *RtbLite) BlockListUpdateLoop() error {
+	timer := time.NewTimer(time.Duration(rl.configure.BlockListUpdateInterval) * time.Second)
+	go func() {
+		for range timer.C {
+			err := rl.blockList.Load()
+			if err != nil {
+				rl.logger.Warning("fail to load block list: %v, ignore", err.Error())
+			}
+			timer.Reset(time.Duration(rl.configure.BlockListUpdateInterval) * time.Second)
 		}
 	}()
 	return nil
@@ -149,11 +165,15 @@ func (rl *RtbLite) SelectByPackage(req *ParsedRequest, creatives *InventoryColle
 	uniqueCreatives := make(map[string]*Inventory)
 	selectedCreatives := make([]*Inventory, 0)
 	rankLimit := creatives.RankItemCount
+	blockList := rl.blockList.blockedCarrier
 	for index, record := range creatives.Data {
 		if len(uniqueCreatives) >= count || (!rl.configure.FillRankedWithRandom && index >= rankLimit) {
 			break
 		}
 		if req.OsVersionNum < record.MinOsNum || req.OsVersionNum > record.MaxOsNum {
+			continue
+		}
+		if _, ok := blockList[BlockItem{record.PackageName, strings.Split(req.M, ",")[0]}]; ok {
 			continue
 		}
 		if record.Frequency > rl.configure.RedisFrequencyPerId {
@@ -207,8 +227,11 @@ func (rl *RtbLite) Augment(req *ParsedRequest, creatives *InventoryCollection) {
 }
 
 func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
-	start := time.Now()
-	defer rl.profiler.OnRequest(time.Now().Sub(start).Seconds())
+	defer func(start time.Time) {
+		rl.profiler.OnRequest(time.Now().Sub(start).Seconds())
+	}(time.Now())
+
+	emptyResponse := `{"ad": [], "error_code": 0, "error_message": "success"}`
 
 	parsed := rl.Parse(req)
 	var filteredByCountry *InventoryCollection
@@ -216,14 +239,14 @@ func (rl *RtbLite) Request(rw http.ResponseWriter, req *http.Request) {
 		if creatives, ok := cache[parsed.IpLib.CountryCode]; ok {
 			filteredByCountry = creatives
 		} else {
-			io.WriteString(rw, "")
+			io.WriteString(rw, emptyResponse)
 			return
 		}
 	} else {
 		if creatives, ok := rl.cache.cacheByCountry[parsed.IpLib.CountryCode]; ok {
 			filteredByCountry = creatives
 		} else {
-			io.WriteString(rw, "")
+			io.WriteString(rw, emptyResponse)
 			return
 		}
 	}

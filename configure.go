@@ -51,6 +51,9 @@ type Configure struct {
 
 	RankTablePath         string `default:"adrank.json"`
 	RankByAdunitTablePath string `default:"adrank_by_adunit.json"`
+
+	BlockListPath           string `default:"block.json"`
+	BlockListUpdateInterval int    `default:"60"`
 }
 
 func NewConfigure() *Configure {

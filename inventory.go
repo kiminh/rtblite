@@ -74,13 +74,19 @@ func (iq *InventoryCollection) Append(inv *Inventory) {
 }
 func (iq InventoryCollection) Len() int { return len(iq.Data) }
 func (iq InventoryCollection) Less(i, j int) bool {
-	iIndex, iOk := iq.PriorityTable[Rank{iq.Data[i].PackageName, iq.Data[i].AdType}]
+	iIndex, iOk := iq.PriorityTable[Rank{iq.Data[i].PackageName, iq.Data[i].AdType, ""}]
 	if !iOk {
-		iIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
+		iIndex, iOk = iq.PriorityTable[Rank{iq.Data[i].PackageName, iq.Data[i].AdType, iq.Data[i].Country}]
+		if !iOk {
+			iIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
+		}
 	}
-	jIndex, jOk := iq.PriorityTable[Rank{iq.Data[j].PackageName, iq.Data[j].AdType}]
+	jIndex, jOk := iq.PriorityTable[Rank{iq.Data[j].PackageName, iq.Data[j].AdType, ""}]
 	if !jOk {
-		jIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
+		jIndex, jOk = iq.PriorityTable[Rank{iq.Data[j].PackageName, iq.Data[j].AdType, iq.Data[j].Country}]
+		if !jOk {
+			jIndex = iq.r.Intn(1000) + len(iq.PriorityTable)*100
+		}
 	}
 	if iIndex == jIndex {
 		return iq.Data[i].Price > iq.Data[j].Price
@@ -230,11 +236,15 @@ func (inv *InventoryCache) Load() error {
 		for adunit, _ := range inv.rankTable.rankByAdunit {
 			adunitAndCountryMap[adunit][record.Country].Append(&record)
 		}
-		if _, ok := inv.rankTable.rankDefault[Rank{record.PackageName, record.AdType}]; ok {
+		if _, ok := inv.rankTable.rankDefault[Rank{record.PackageName, record.AdType, ""}]; ok {
+			countryMap[record.Country].RankItemCount += 1
+		} else if _, ok := inv.rankTable.rankDefault[Rank{record.PackageName, record.AdType, record.Country}]; ok {
 			countryMap[record.Country].RankItemCount += 1
 		}
 		for adunit, rankTable := range inv.rankTable.rankByAdunit {
-			if _, ok := rankTable[Rank{record.PackageName, record.AdType}]; ok {
+			if _, ok := rankTable[Rank{record.PackageName, record.AdType, ""}]; ok {
+				adunitAndCountryMap[adunit][record.Country].RankItemCount += 1
+			} else if _, ok := rankTable[Rank{record.PackageName, record.AdType, record.Country}]; ok {
 				adunitAndCountryMap[adunit][record.Country].RankItemCount += 1
 			}
 		}
@@ -245,27 +255,17 @@ func (inv *InventoryCache) Load() error {
 	for _, queue := range countryMap {
 		sort.Sort(queue)
 	}
+	/*
+		for _, value := range countryMap["IN"].Data {
+			fmt.Println(value.PackageName, value.AdType)
+		}
+	*/
 	for _, adunitMap := range adunitAndCountryMap {
 		for _, queue := range adunitMap {
 			sort.Sort(queue)
 		}
 	}
 	sortTimeSpent := meter.TimeElapsed() - recordTimeSpent
-	//	uniqueMap := make(map[string]InventoryCollection)
-	//	for countryCode, queue := range countryMap {
-	//		newQueue := InventoryCollection{}
-	//		var lastRecord *Inventory = nil
-	//		for _, record := range queue {
-	//			if lastRecord != nil && lastRecord.packageName == record.packageName {
-	//				continue
-	//			} else {
-	//				newQueue = append(newQueue, record)
-	//				lastRecord = record
-	//			}
-	//		}
-	//		uniqueMap[countryCode] = newQueue
-	//	}
-	//	uniqTimeSpent := meter.TimeElapsed() - recordTimeSpent
 	inv.cacheByCountry = countryMap
 	inv.cacheByAdunitAndCountry = adunitAndCountryMap
 
